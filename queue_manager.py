@@ -27,6 +27,8 @@ CATEGORY_HEADERS = {key: header for key, header in CATEGORIES}
 MENTION_PATTERN = re.compile(r"<@!?(\d+)>")
 CORRUPT_MENTION_PATTERN = re.compile(r"^<@@(?P<value>.+)>$")
 
+BOT_DISPLAY_NAME = "Heartless Butler"
+
 
 def _section_headers(data: dict) -> dict[str, str]:
     headers = dict(CATEGORY_HEADERS)
@@ -647,7 +649,7 @@ def _apply_queue_embed_style(
 ) -> None:
     if bot and bot.user:
         embed.set_author(
-            name=bot.user.display_name or bot.user.name,
+            name=BOT_DISPLAY_NAME,
             icon_url=bot.user.display_avatar.url,
         )
     elif guild:
