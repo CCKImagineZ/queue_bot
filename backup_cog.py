@@ -59,7 +59,6 @@ async def send_queue_backup(
 class BackupCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._startup_backup_done = False
         timezone = get_backup_timezone()
 
         @tasks.loop(time=datetime.time(hour=0, minute=0, tzinfo=timezone))
@@ -75,10 +74,10 @@ class BackupCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if self._startup_backup_done:
+        if getattr(self.bot, "_startup_backup_sent", False):
             return
 
-        self._startup_backup_done = True
+        self.bot._startup_backup_sent = True
         sent = False
         for guild in self.bot.guilds:
             message = await send_queue_backup(guild)

@@ -38,6 +38,20 @@ class QueueCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        if interaction.type is not discord.InteractionType.application_command:
+            return
+
+        command_name = interaction.command.qualified_name if interaction.command else "unknown"
+        logger.info(
+            "Command /%s from %s (%s) in guild %s",
+            command_name,
+            interaction.user,
+            interaction.user.id,
+            interaction.guild_id,
+        )
+
     async def section_autocomplete(
         self,
         interaction: discord.Interaction,
@@ -61,6 +75,11 @@ class QueueCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
+        if getattr(self.bot, "_queue_startup_done", False):
+            return
+
+        self.bot._queue_startup_done = True
+
         for guild in self.bot.guilds:
             channel = self._get_queue_channel(guild)
             if not channel:
@@ -70,7 +89,13 @@ class QueueCog(commands.Cog):
             if not data.get("seeded_from_backup"):
                 self._seed_from_backup()
 
+            self.bot.loop.create_task(self._startup_refresh(channel))
+
+    async def _startup_refresh(self, channel: discord.TextChannel) -> None:
+        try:
             await self._refresh_queue_message(channel)
+        except Exception:
+            logger.exception("Startup queue refresh failed for #%s", channel.name)
 
     def _seed_from_backup(self) -> None:
         if not import_queues_backup():
@@ -215,13 +240,57 @@ class QueueCog(commands.Cog):
         channel: discord.TextChannel,
         confirmation: str,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self._refresh_queue_message(channel)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
+        try:
+            await self._refresh_queue_message(channel)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "I couldn't update the queue board. Check that I have "
+                "**View Channel**, **Send Messages**, **Embed Links**, and "
+                "**Manage Messages** in the queue channel.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException:
+            logger.exception("Failed to refresh queue board")
+            await interaction.followup.send(
+                "Failed to update the queue board. Try `/queue post` again.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.followup.send(confirmation, ephemeral=True)
+
+    async def _defer_and_get_channel(
+        self,
+        interaction: discord.Interaction,
+    ) -> discord.TextChannel | None:
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "This command can only be used in a server.",
+                ephemeral=True,
+            )
+            return None
+
+        channel = self._get_queue_channel(interaction.guild)
+        if not channel:
+            await interaction.response.send_message(
+                "Queue channel not found. Set `QUEUE_CHANNEL_ID` in `.env` or create a `#queue` channel.",
+                ephemeral=True,
+            )
+            return None
+
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
+        return channel
 
     queue_group = app_commands.Group(
         name="queue",
         description="Manage the server queue board",
+        default_permissions=discord.Permissions(administrator=True),
     )
 
     creator_group = app_commands.Group(
@@ -232,13 +301,13 @@ class QueueCog(commands.Cog):
 
     @creator_group.command(name="new", description="Create a new queue section")
     @app_commands.describe(text="Section header text (shown bold on the board)")
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def creator_new(
         self,
         interaction: discord.Interaction,
         text: str,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
@@ -247,7 +316,7 @@ class QueueCog(commands.Cog):
         try:
             _, header = create_custom_section(data, text)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
 
         save_data(data)
@@ -261,13 +330,13 @@ class QueueCog(commands.Cog):
     @app_commands.describe(
         section="Section to delete (pick from list or type part of the name)",
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def creator_delete(
         self,
         interaction: discord.Interaction,
         section: str,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
@@ -276,7 +345,7 @@ class QueueCog(commands.Cog):
         try:
             header = delete_custom_section(data, section)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
 
         save_data(data)
@@ -297,20 +366,20 @@ class QueueCog(commands.Cog):
             app_commands.Choice(name="Down", value="down"),
         ]
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def creator_move(
         self,
         interaction: discord.Interaction,
         section: str,
         direction: app_commands.Choice[str],
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
         data = load_data()
         if section not in data["categories"]:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Unknown section. Pick one from the list.",
                 ephemeral=True,
             )
@@ -319,7 +388,7 @@ class QueueCog(commands.Cog):
         try:
             header = move_section(data, section, direction.value)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
 
         save_data(data)
@@ -358,20 +427,20 @@ class QueueCog(commands.Cog):
         section="Queue section to add to",
         member="Member to add",
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def add(
         self,
         interaction: discord.Interaction,
         section: str,
         member: discord.Member,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
         data = load_data()
         if section not in data["categories"]:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Unknown section. Pick one from the list.",
                 ephemeral=True,
             )
@@ -380,7 +449,7 @@ class QueueCog(commands.Cog):
         entries = data["categories"][section]
 
         if any(entry_matches_member(existing, member) for existing in entries):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{member.mention} is already in **{section_display(section, data)}**.",
                 ephemeral=True,
             )
@@ -410,7 +479,7 @@ class QueueCog(commands.Cog):
         from_section="Section to move from",
         to_section="Section to move to",
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def move(
         self,
         interaction: discord.Interaction,
@@ -418,12 +487,12 @@ class QueueCog(commands.Cog):
         from_section: str,
         to_section: str,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
         if from_section == to_section:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Source and destination sections must be different.",
                 ephemeral=True,
             )
@@ -431,7 +500,7 @@ class QueueCog(commands.Cog):
 
         data = load_data()
         if from_section not in data["categories"] or to_section not in data["categories"]:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Unknown section. Pick one from the list.",
                 ephemeral=True,
             )
@@ -442,14 +511,14 @@ class QueueCog(commands.Cog):
         index = find_entry_index(source, member)
 
         if index is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{member.mention} is not in **{section_display(from_section, data)}**.",
                 ephemeral=True,
             )
             return
 
         if any(entry_matches_member(existing, member) for existing in destination):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{member.mention} is already in **{section_display(to_section, data)}**.",
                 ephemeral=True,
             )
@@ -486,26 +555,24 @@ class QueueCog(commands.Cog):
         description="Link an existing queue message and import its contents",
     )
     @app_commands.describe(message_id="ID of the queue board message")
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def attach(
         self,
         interaction: discord.Interaction,
         message_id: str,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
         try:
             target_id = int(message_id)
         except ValueError:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Message ID must be a number.",
                 ephemeral=True,
             )
             return
-
-        await interaction.response.defer(ephemeral=True)
 
         try:
             message = await channel.fetch_message(target_id)
@@ -540,7 +607,7 @@ class QueueCog(commands.Cog):
         )
 
     @queue_group.command(name="backup", description="Post a JSON backup to the log channel")
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def backup(self, interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message(
@@ -566,19 +633,19 @@ class QueueCog(commands.Cog):
 
     @queue_group.command(name="clear", description="Clear all members from a queue section")
     @app_commands.describe(section="Queue section to clear")
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def clear(
         self,
         interaction: discord.Interaction,
         section: str,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
         data = load_data()
         if section not in data["categories"]:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Unknown section. Pick one from the list.",
                 ephemeral=True,
             )
@@ -601,7 +668,7 @@ class QueueCog(commands.Cog):
         return await self.section_autocomplete(interaction, current)
 
     @queue_group.command(name="list", description="Show the current queue data")
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def list_queue(self, interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message(
@@ -609,6 +676,8 @@ class QueueCog(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        await interaction.response.defer(ephemeral=True)
 
         data = load_data()
         content = _build_queue_description(
@@ -619,7 +688,7 @@ class QueueCog(commands.Cog):
         )
 
         if len(content) <= 1900:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"```\n{content}\n```",
                 ephemeral=True,
             )
@@ -627,7 +696,7 @@ class QueueCog(commands.Cog):
 
         payload = io.BytesIO(content.encode("utf-8"))
         file = discord.File(payload, filename="queue_list.txt")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Queue is too long for one message. Here is the full list:",
             file=file,
             ephemeral=True,
@@ -635,13 +704,13 @@ class QueueCog(commands.Cog):
 
     @queue_group.command(name="purge", description="Remove a member from every section")
     @app_commands.describe(member="Member to remove everywhere")
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def purge(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
@@ -649,7 +718,7 @@ class QueueCog(commands.Cog):
         removed_from = remove_member_from_all(data, member)
 
         if not removed_from:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{member.mention} was not found in any section.",
                 ephemeral=True,
             )
@@ -670,20 +739,20 @@ class QueueCog(commands.Cog):
         member="Member to remove",
         section="Queue section to remove from",
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def remove(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
         section: str,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
         data = load_data()
         if section not in data["categories"]:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Unknown section. Pick one from the list.",
                 ephemeral=True,
             )
@@ -693,7 +762,7 @@ class QueueCog(commands.Cog):
         index = find_entry_index(entries, member)
 
         if index is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{member.mention} is not in **{section_display(section, data)}**.",
                 ephemeral=True,
             )
@@ -720,13 +789,13 @@ class QueueCog(commands.Cog):
         description="Remove a member from every section they appear in",
     )
     @app_commands.describe(member="Member to remove everywhere")
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def remove_all(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
@@ -734,7 +803,7 @@ class QueueCog(commands.Cog):
         removed_from = remove_member_from_all(data, member)
 
         if not removed_from:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{member.mention} is not in any section.",
                 ephemeral=True,
             )
@@ -759,7 +828,7 @@ class QueueCog(commands.Cog):
         member="Member to move",
         position="New position (1 = top of section)",
     )
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def reorder(
         self,
         interaction: discord.Interaction,
@@ -767,13 +836,13 @@ class QueueCog(commands.Cog):
         member: discord.Member,
         position: app_commands.Range[int, 1, 100],
     ):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
         data = load_data()
         if section not in data["categories"]:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Unknown section. Pick one from the list.",
                 ephemeral=True,
             )
@@ -783,14 +852,14 @@ class QueueCog(commands.Cog):
         index = find_entry_index(entries, member)
 
         if index is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{member.mention} is not in **{section_display(section, data)}**.",
                 ephemeral=True,
             )
             return
 
         if position > len(entries):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Position must be between 1 and {len(entries)}.",
                 ephemeral=True,
             )
@@ -814,15 +883,39 @@ class QueueCog(commands.Cog):
     ):
         return await self.section_autocomplete(interaction, current)
 
+    @queue_group.command(name="ping", description="Test if the bot responds to you")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def ping(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f"Pong! The bot received your command, {interaction.user.mention}.",
+            ephemeral=True,
+        )
+
     @queue_group.command(name="post", description="Post or refresh the queue board")
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def post(self, interaction: discord.Interaction):
-        channel = await self._get_queue_channel_or_reply(interaction)
+        channel = await self._defer_and_get_channel(interaction)
         if not channel:
             return
 
-        await interaction.response.defer(ephemeral=True)
-        message = await self._refresh_queue_message(channel)
+        try:
+            message = await self._refresh_queue_message(channel)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "I couldn't update the queue board. Check that I have "
+                "**View Channel**, **Send Messages**, **Embed Links**, and "
+                "**Manage Messages** in the queue channel.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException:
+            logger.exception("Failed to refresh queue board")
+            await interaction.followup.send(
+                "Failed to update the queue board. Try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.followup.send(
             f"Queue board updated in {channel.mention}.",
             ephemeral=True,

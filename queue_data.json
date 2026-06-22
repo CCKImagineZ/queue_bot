@@ -3,110 +3,21 @@
   "channel_id": 1518017089443463248,
   "initial_backup_sent": true,
   "seeded_from_backup": true,
-  "name_cache": {
-    "276179439644180481": "A-a-ron",
-    "499488766595956746": "Mooniee 🌙"
-  },
-  "custom_sections": [
-    {
-      "key": "custom_mooniee",
-      "header": "🌙 Mooniee"
-    }
-  ],
-  "categories": {
-    "chains": [
-      "@Sinfulzumaure41",
-      "@Manny Tobias",
-      "@YK_Gabriel",
-      "@๓illiē",
-      "@MsLollygag",
-      "@Miss Nova",
-      "@APXJabnhook",
-      "@Daniel “Knockout” Wesson"
-    ],
-    "liveries": [
-      "@ChaoticAsmodeusVT"
-    ],
-    "blackline_apparel": [
-      "@youngggdre",
-      "@𝑻𝑹𝒀⚰️"
-    ],
-    "lovely_designs": [
-      "@Raging Ginge98",
-      "@👑QUEEN👑",
-      "@Walter Wattz",
-      "@Heathen",
-      "@Pinkalushus",
-      "@16 ~ 𝒫𝒾𝓅𝑒🔧",
-      "@Graves",
-      "@ChefHeartless",
-      "@A | Z 🥀🫧",
-      "@ϟ𝕿𝖔𝖗𝖒𝖊𝖓𝖙ϟ",
-      "@danni𓆩♡𓆪",
-      "@Liam",
-      "@♥ Apricot ♥",
-      "@Sullies"
-    ],
-    "skins": [],
-    "prio": [
-      "@Rebel",
-      "@𝘉𝘦𝘵𝘩𝘪𝘦 ღ",
-      "@Bag3Chasin2"
-    ],
-    "packages": [
-      "@Renz",
-      "@kingkillem",
-      "@Hellzdemise",
-      "@Sinfulzumaure41",
-      "@𝕲𝖍𝖔𝖘𝖙",
-      "@Just Another Torres",
-      "@iTackleFatKids",
-      "@Icarus",
-      "@SirMcSwishaLott"
-    ],
-    "clothing": [
-      "@elaa ࣪ ִֶָ☾."
-    ],
-    "tb_designs": [
-      "@liltaterz",
-      "@CorpseKai"
-    ],
-    "tattoos": [
-      "@MsLollygag",
-      "@👑QUEEN👑",
-      "@Pinkalushus",
-      "@Tommy Chang",
-      "@ProverbzUTM",
-      "@Nh_Logan",
-      "@𝔔𝔲𝔦𝔫𝔷𝔢𝔩",
-      "@YK_Gabriel",
-      "@Quinn Elms",
-      "@Jake \"DC\" Sullivan",
-      "@👑QUEENIE👑"
-    ],
-    "most_hated": [
-      "@Rebel",
-      "@Ms.TRENDSETTER🦋🏆",
-      "@REDgroovicorn",
-      "@Dakota Ravenwolf (Mobile)"
-    ],
-    "custom_mooniee": [
-      "499488766595956746"
-    ]
-  },
-  "section_order": [
+  "name_cache": {},
+  "custom_sections": [],
+  "categories": {},
+  "section_order": [],
+  "hidden_sections": [
     "packages",
     "tattoos",
     "chains",
     "clothing",
     "skins",
     "prio",
-    "liveries",
     "most_hated",
     "lovely_designs",
     "tb_designs",
     "blackline_apparel",
-    "custom_mooniee"
-  ],
-  "hidden_sections": []
+    "liveries"
+  ]
 }

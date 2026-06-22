@@ -1,5 +1,6 @@
 .env
 discord.log
+deploy.zip
 __pycache__/
 *.pyc
 *.pyo
