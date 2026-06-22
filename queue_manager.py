@@ -118,28 +118,6 @@ def find_section_matches(data: dict, query: str) -> list[tuple[str, str]]:
     return matches
 
 
-def find_custom_section_matches(data: dict, query: str) -> list[tuple[str, str]]:
-    query_fold = query.strip().casefold()
-    if not query_fold:
-        return []
-
-    matches: list[tuple[str, str]] = []
-    for entry in data.get("custom_sections", []):
-        key = entry["key"]
-        header = entry["header"]
-        header_fold = header.casefold()
-        slug = _slugify_header(header)
-
-        if (
-            query_fold in header_fold
-            or query_fold in slug
-            or query_fold in key.casefold()
-        ):
-            matches.append((key, header))
-
-    return matches
-
-
 def custom_section_keys(data: dict) -> set[str]:
     return {entry["key"] for entry in data.get("custom_sections", [])}
 
@@ -278,6 +256,43 @@ def load_data() -> dict:
 def save_data(data: dict) -> None:
     with DATA_FILE.open("w", encoding="utf-8") as file:
         json.dump(data, file, indent=2, ensure_ascii=False)
+
+
+def is_persisted_queue_empty(data: dict) -> bool:
+    if data.get("custom_sections"):
+        return False
+
+    categories = data.get("categories", {})
+    return not any(categories.values())
+
+
+def import_queue_from_board_message(
+    data: dict,
+    message: discord.Message,
+) -> bool:
+    if message.embeds:
+        parsed = parse_queue_embed(message.embeds[0], message.mentions, data)
+    elif message.content:
+        parsed = parse_queue_message(message.content, message.mentions, data)
+    else:
+        return False
+
+    if not parsed:
+        return False
+
+    data["message_id"] = message.id
+    data["channel_id"] = message.channel.id
+    categories = data.setdefault("categories", {})
+
+    for key, entries in parsed.items():
+        categories[key] = entries
+
+    for member in message.mentions:
+        cache_member_name(data, member)
+
+    ensure_section_order(data)
+    save_data(data)
+    return True
 
 
 def _normalize_entry(entry: object) -> str:

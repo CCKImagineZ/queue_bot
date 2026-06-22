@@ -17,6 +17,8 @@ from queue_manager import (
     find_entry_index,
     get_all_categories,
     import_queues_backup,
+    import_queue_from_board_message,
+    is_persisted_queue_empty,
     is_queue_board_message,
     load_data,
     member_to_entry,
@@ -89,7 +91,45 @@ class QueueCog(commands.Cog):
             if not data.get("seeded_from_backup"):
                 self._seed_from_backup()
 
+            await self._restore_queue_data_if_needed(channel)
             self.bot.loop.create_task(self._startup_refresh(channel))
+
+    async def _restore_queue_data_if_needed(
+        self,
+        channel: discord.TextChannel,
+    ) -> None:
+        data = load_data()
+        if not is_persisted_queue_empty(data):
+            return
+
+        message = None
+        if data.get("message_id"):
+            try:
+                message_channel = channel
+                if data.get("channel_id") and data["channel_id"] != channel.id:
+                    maybe_channel = channel.guild.get_channel(data["channel_id"])
+                    if isinstance(maybe_channel, discord.TextChannel):
+                        message_channel = maybe_channel
+
+                message = await message_channel.fetch_message(data["message_id"])
+            except discord.NotFound:
+                message = None
+
+        if not message:
+            message = await self._find_existing_queue_message(channel)
+
+        if not message:
+            logger.warning(
+                "Queue data file is empty and no board message was found to restore from."
+            )
+            return
+
+        if import_queue_from_board_message(data, message):
+            logger.info(
+                "Restored queue data from board message %s in #%s",
+                message.id,
+                channel.name,
+            )
 
     async def _startup_refresh(self, channel: discord.TextChannel) -> None:
         try:
@@ -594,8 +634,11 @@ class QueueCog(commands.Cog):
                 message.mentions,
                 data,
             )
-        for key in data["categories"]:
-            data["categories"][key] = parsed.get(key, [])
+
+        categories = data.setdefault("categories", {})
+        for key, entries in parsed.items():
+            categories[key] = entries
+
         for member in message.mentions:
             cache_member_name(data, member)
         save_data(data)

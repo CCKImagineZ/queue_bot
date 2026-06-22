@@ -12,7 +12,6 @@ $include = @(
     "backup_cog.py",
     "requirements.txt",
     "discloud.config",
-    "queue_data.json",
     "queues_backup.json",
     ".env"
 )

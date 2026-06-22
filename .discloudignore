@@ -1,0 +1,10 @@
+discord.log
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.cursor/
+*.md
+deploy.zip
+queue_data.json
