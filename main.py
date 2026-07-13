@@ -18,11 +18,33 @@ handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(
     logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")
 )
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
 
-bot = commands.Bot(command_prefix="/", intents=intents)
+log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_name, logging.INFO)
+
+# discord.py DEBUG logs every HTTP/WebSocket event and grows quickly on small hosts.
+logging.getLogger("discord").setLevel(logging.WARNING)
+logging.getLogger("discord.http").setLevel(logging.WARNING)
+logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+
+intents = discord.Intents.default()
+intents.members = True
+# Slash-only bot — no need to receive every message body (saves RAM on free tier).
+intents.message_content = False
+
+
+async def _disabled_prefix(_bot: commands.Bot, _message: discord.Message):
+    """This bot uses slash commands only; ignore text like /gcreate or /gstart."""
+    return []
+
+
+bot = commands.Bot(
+    command_prefix=_disabled_prefix,
+    intents=intents,
+    # Free-tier hosts (100 MB): avoid caching every guild member in RAM.
+    member_cache_flags=discord.MemberCacheFlags.none(),
+    chunk_guilds_at_startup=False,
+)
 _commands_synced = False
 logger = logging.getLogger(__name__)
 
@@ -107,7 +129,7 @@ async def on_app_command_error(
 async def on_ready():
     global _commands_synced
 
-    print(f"Logged in as {bot.user.name}")
+    logger.info("Logged in as %s (guilds: %s)", bot.user, len(bot.guilds))
 
     if _commands_synced:
         return
@@ -122,4 +144,19 @@ async def on_ready():
         logger.info("Synced %s global slash command(s)", len(synced))
 
 
-bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+@bot.event
+async def on_disconnect():
+    logger.warning("Disconnected from Discord gateway")
+
+
+@bot.event
+async def on_resumed():
+    logger.info("Resumed Discord gateway session")
+
+
+@bot.event
+async def on_error(event: str, *args, **kwargs):
+    logger.exception("Unhandled error in event %s", event)
+
+
+bot.run(token, log_handler=handler, log_level=log_level)

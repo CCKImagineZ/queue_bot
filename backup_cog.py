@@ -78,29 +78,35 @@ class BackupCog(commands.Cog):
             return
 
         self.bot._startup_backup_sent = True
-        sent = False
-        for guild in self.bot.guilds:
-            message = await send_queue_backup(guild)
-            if message:
-                sent = True
+        try:
+            sent = False
+            for guild in self.bot.guilds:
+                message = await send_queue_backup(guild)
+                if message:
+                    sent = True
 
-        if not sent:
-            logger.warning("Startup queue backup skipped: no log channel found")
+            if not sent:
+                logger.warning("Startup queue backup skipped: no log channel found")
+        except Exception:
+            logger.exception("Startup queue backup failed")
 
     def cog_unload(self):
         self.daily_backup.cancel()
 
     async def _send_daily_backups(self) -> None:
-        sent = False
-        for guild in self.bot.guilds:
-            message = await send_queue_backup(guild)
-            if message:
-                sent = True
-            else:
-                logger.warning("Log channel not found in guild %s", guild.id)
+        try:
+            sent = False
+            for guild in self.bot.guilds:
+                message = await send_queue_backup(guild)
+                if message:
+                    sent = True
+                else:
+                    logger.warning("Log channel not found in guild %s", guild.id)
 
-        if not sent:
-            logger.warning("Daily queue backup skipped: no log channel found")
+            if not sent:
+                logger.warning("Daily queue backup skipped: no log channel found")
+        except Exception:
+            logger.exception("Daily queue backup failed")
 
 
 async def setup(bot: commands.Bot):

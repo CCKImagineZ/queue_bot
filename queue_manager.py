@@ -1,6 +1,7 @@
 import datetime
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 import discord
@@ -254,8 +255,24 @@ def load_data() -> dict:
 
 
 def save_data(data: dict) -> None:
+    prune_name_cache(data)
     with DATA_FILE.open("w", encoding="utf-8") as file:
         json.dump(data, file, indent=2, ensure_ascii=False)
+
+
+def prune_name_cache(data: dict) -> None:
+    """Drop cached names for users no longer on any queue section."""
+    active_ids: set[str] = set()
+    for entries in data.get("categories", {}).values():
+        for entry in entries:
+            user_id = entry_user_id(entry)
+            if user_id is not None:
+                active_ids.add(str(user_id))
+
+    cache = data.setdefault("name_cache", {})
+    for key in list(cache):
+        if key not in active_ids:
+            del cache[key]
 
 
 def is_persisted_queue_empty(data: dict) -> bool:
@@ -472,6 +489,162 @@ def remove_user_id_from_all(
             if _entry_user_id(entry) != user_id
         ]
         if len(kept) != len(entries):
+            data["categories"][key] = kept
+            removed_from.append(key)
+    return removed_from
+
+
+def fold_fancy_text(text: str) -> str:
+    """Map fancy Unicode fonts (e.g. 𝑻𝑹𝒀) to plain letters for matching."""
+    parts: list[str] = []
+    for ch in text:
+        try:
+            name = unicodedata.name(ch)
+        except ValueError:
+            parts.append(ch)
+            continue
+
+        # Mathematical: "MATHEMATICAL BOLD ITALIC CAPITAL T"
+        # Fullwidth / Latin: "... CAPITAL LETTER T"
+        match = re.search(
+            r"(CAPITAL|SMALL)(?: LETTER)? ([A-Z])\b",
+            name,
+        )
+        if match and (
+            "MATHEMATICAL" in name
+            or "FULLWIDTH" in name
+            or "CIRCLED" in name
+            or name.startswith("LATIN ")
+        ):
+            letter = match.group(2)
+            if match.group(1) == "SMALL":
+                letter = letter.lower()
+            parts.append(letter)
+            continue
+
+        parts.append(ch)
+
+    folded = unicodedata.normalize("NFKD", "".join(parts))
+    folded = "".join(c for c in folded if not unicodedata.combining(c))
+    return folded.casefold()
+
+
+def _name_candidates_for_entry(
+    entry: str,
+    guild: discord.Guild | None,
+    name_cache: dict[str, str] | None,
+) -> list[str]:
+    """Resolve display names for an ID-based (or legacy name) queue entry."""
+    names: list[str] = []
+    user_id = _entry_user_id(entry)
+
+    if user_id is not None:
+        display = _entry_display_name(entry, guild, name_cache)
+        if display:
+            names.append(display)
+
+        if guild:
+            member = guild.get_member(user_id)
+            if member:
+                for candidate in (
+                    member.display_name,
+                    member.global_name,
+                    member.name,
+                    member.nick,
+                ):
+                    if candidate and candidate not in names:
+                        names.append(candidate)
+        return names
+
+    legacy = normalize_backup_name(entry)
+    if legacy:
+        names.append(legacy)
+    return names
+
+
+def find_queue_users_by_name(
+    data: dict,
+    query: str,
+    guild: discord.Guild | None = None,
+) -> list[dict]:
+    """
+    Find queue people whose resolved display name contains ``query``.
+
+    Queue storage is Discord IDs; names come from the guild / name_cache.
+    Fancy fonts are folded so ``try`` matches ``𝑻𝑹𝒀``.
+    """
+    query_folded = fold_fancy_text(query.strip())
+    if not query_folded:
+        return []
+
+    name_cache = data.get("name_cache", {})
+    grouped: dict[str, dict] = {}
+
+    for section_key, header in get_all_categories(data):
+        for entry in data["categories"].get(section_key, []):
+            candidates = _name_candidates_for_entry(entry, guild, name_cache)
+            if not any(
+                query_folded in fold_fancy_text(candidate)
+                for candidate in candidates
+                if candidate
+            ):
+                continue
+
+            user_id = _entry_user_id(entry)
+            display_name = candidates[0] if candidates else str(entry)
+            group_key = (
+                f"id:{user_id}"
+                if user_id is not None
+                else f"name:{fold_fancy_text(display_name)}"
+            )
+
+            match = grouped.get(group_key)
+            if match is None:
+                match = {
+                    "display_name": display_name,
+                    "user_id": user_id,
+                    "entry": entry,
+                    "sections": [],
+                }
+                grouped[group_key] = match
+
+            if section_key not in match["sections"]:
+                match["sections"].append(section_key)
+
+    return list(grouped.values())
+
+
+def remove_name_match_from_all(data: dict, match: dict) -> list[str]:
+    """Remove one find_queue_users_by_name result from every section."""
+    user_id = match.get("user_id")
+    if user_id is not None:
+        removed_from = []
+        for key in data["categories"]:
+            entries = data["categories"][key]
+            kept = [
+                entry
+                for entry in entries
+                if _entry_user_id(entry) != user_id
+            ]
+            if len(kept) != len(entries):
+                data["categories"][key] = kept
+                removed_from.append(key)
+        return removed_from
+
+    target = fold_fancy_text(normalize_backup_name(match["entry"]))
+    removed_from = []
+    for key in data["categories"]:
+        entries = data["categories"][key]
+        kept = []
+        changed = False
+        for entry in entries:
+            if _entry_user_id(entry) is None and fold_fancy_text(
+                normalize_backup_name(entry)
+            ) == target:
+                changed = True
+                continue
+            kept.append(entry)
+        if changed:
             data["categories"][key] = kept
             removed_from.append(key)
     return removed_from

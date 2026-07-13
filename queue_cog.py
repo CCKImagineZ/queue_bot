@@ -15,6 +15,7 @@ from queue_manager import (
     delete_section_autocomplete_choices,
     entry_matches_member,
     find_entry_index,
+    find_queue_users_by_name,
     get_all_categories,
     import_queues_backup,
     import_queue_from_board_message,
@@ -27,6 +28,7 @@ from queue_manager import (
     parse_queue_message,
     queue_embeds_match,
     remove_member_from_all,
+    remove_name_match_from_all,
     save_data,
     section_display,
     entry_user_id,
@@ -34,6 +36,163 @@ from queue_manager import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _format_userremoval_preview(matches: list[dict], data: dict, query: str) -> str:
+    lines = [
+        f"Found **{len(matches)}** queue match(es) for `{query}`:",
+        "",
+    ]
+    for match in matches:
+        sections = ", ".join(
+            f"**{section_display(key, data)}**" for key in match["sections"]
+        )
+        user_id = match.get("user_id")
+        id_note = f" (ID `{user_id}`)" if user_id is not None else ""
+        lines.append(f"• **{match['display_name']}**{id_note} — {sections}")
+
+    lines.extend(
+        [
+            "",
+            "Press **Continue** to remove them from the queue, or **Cancel**.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+class UserRemovalConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "QueueCog",
+        channel: discord.TextChannel,
+        author_id: int,
+        matches: list[dict],
+        query: str,
+        timeout: float = 120,
+    ):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.channel = channel
+        self.author_id = author_id
+        self.matches = matches
+        self.query = query
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the person who ran `/queue userremoval` can confirm this.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        logger.exception("userremoval button failed (%s)", getattr(item, "label", item))
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "Something went wrong while handling that button. Try `/queue userremoval` again.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "Something went wrong while handling that button. Try `/queue userremoval` again.",
+                    ephemeral=True,
+                )
+        except discord.HTTPException:
+            pass
+
+    async def _delete_prompt(self, interaction: discord.Interaction) -> None:
+        target = interaction.message or self.message
+        if target is None:
+            return
+        try:
+            await target.delete()
+        except discord.HTTPException:
+            pass
+
+    async def on_timeout(self) -> None:
+        if self.message:
+            try:
+                await self.message.delete()
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Continue", style=discord.ButtonStyle.danger)
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        # Acknowledge immediately — defer(ephemeral=True) is invalid for buttons
+        # and causes Discord's "This interaction failed".
+        await interaction.response.edit_message(
+            content="Removing matched users…",
+            view=None,
+        )
+        self.message = interaction.message
+
+        data = load_data()
+        removed_lines: list[str] = []
+        for match in self.matches:
+            removed_from = remove_name_match_from_all(data, match)
+            if not removed_from:
+                continue
+            sections = ", ".join(
+                f"**{section_display(key, data)}**" for key in removed_from
+            )
+            removed_lines.append(f"• **{match['display_name']}** from {sections}")
+
+        if not removed_lines:
+            await self._delete_prompt(interaction)
+            await interaction.followup.send(
+                "No matching users were still on the queue.",
+                ephemeral=True,
+            )
+            self.stop()
+            return
+
+        save_data(data)
+        try:
+            await self.cog._refresh_queue_message(self.channel)
+        except Exception:
+            logger.exception("Failed to refresh queue after userremoval")
+            await self._delete_prompt(interaction)
+            await interaction.followup.send(
+                "Users were removed from saved data, but the board refresh failed. "
+                "Try `/queue post`.\n" + "\n".join(removed_lines),
+                ephemeral=True,
+            )
+            self.stop()
+            return
+
+        await self._delete_prompt(interaction)
+        await interaction.followup.send(
+            "Removed from queue:\n" + "\n".join(removed_lines),
+            ephemeral=True,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await interaction.response.edit_message(
+            content="Cancelling…",
+            view=None,
+        )
+        self.message = interaction.message
+        await self._delete_prompt(interaction)
+        await interaction.followup.send("Removal cancelled.", ephemeral=True)
+        self.stop()
 
 
 class QueueCog(commands.Cog):
@@ -826,6 +985,56 @@ class QueueCog(commands.Cog):
         current: str,
     ):
         return await self.section_autocomplete(interaction, current)
+
+    @queue_group.command(
+        name="userremoval",
+        description="Remove queue users by display name (font-insensitive)",
+    )
+    @app_commands.describe(
+        name="Part of the display name to match (e.g. try matches 𝑻𝑹𝒀)",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def userremoval(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+    ):
+        channel = await self._defer_and_get_channel(interaction)
+        if not channel:
+            return
+
+        query = name.strip()
+        if not query:
+            await interaction.followup.send(
+                "Type part of a display name to search for.",
+                ephemeral=True,
+            )
+            return
+
+        data = load_data()
+        matches = find_queue_users_by_name(data, query, interaction.guild)
+
+        if not matches:
+            await interaction.followup.send(
+                f"No queue users matched `{query}`.",
+                ephemeral=True,
+            )
+            return
+
+        view = UserRemovalConfirmView(
+            cog=self,
+            channel=channel,
+            author_id=interaction.user.id,
+            matches=matches,
+            query=query,
+        )
+        message = await interaction.followup.send(
+            _format_userremoval_preview(matches, data, query),
+            view=view,
+            ephemeral=True,
+            wait=True,
+        )
+        view.message = message
 
     @queue_group.command(
         name="remove_all",
